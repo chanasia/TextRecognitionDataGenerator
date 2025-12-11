@@ -61,8 +61,8 @@ def parse_arguments():
         "--count",
         type=int,
         nargs="?",
-        help="The number of images to be created.",
-        required=True,
+        help="The number of images to be created. If not specified, will use all lines from dict/input file.",
+        default=None,
     )
     parser.add_argument(
         "-rs",
@@ -391,14 +391,14 @@ def main():
     strings = []
 
     if args.use_wikipedia:
-        strings = create_strings_from_wikipedia(args.length, args.count, args.language)
+        strings = create_strings_from_wikipedia(args.length, args.count if args.count else 100, args.language)
     elif args.input_file != "":
-        strings = create_strings_from_file(args.input_file, args.count)
+        strings = create_strings_from_file(args.input_file, args.count if args.count else sys.maxsize)
     elif args.random_sequences:
         strings = create_strings_randomly(
             args.length,
             args.random,
-            args.count,
+            args.count if args.count else 100,
             args.include_letters,
             args.include_numbers,
             args.include_symbols,
@@ -413,8 +413,15 @@ def main():
             args.name_format = 2
     else:
         strings = create_strings_from_dict(
-            args.length, args.random, args.count, lang_dict
+            args.length, args.random, args.count if args.count else len(lang_dict), lang_dict
         )
+
+    # If count was not specified, use all generated strings
+    if args.count is None:
+        args.count = len(strings)
+    else:
+        # If count was specified, trim strings to that count
+        strings = strings[:args.count]
 
     if args.language == "ar":
         from arabic_reshaper import ArabicReshaper
