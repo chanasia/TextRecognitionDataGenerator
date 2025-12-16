@@ -460,10 +460,7 @@ def _generate_horizontal_text(
     else:
         graphemes = list(text)
 
-    print(f"\n[CANVAS DEBUG] Text: '{text}'")
-
     left, top, right, bottom = get_text_bbox(image_font, text)
-    print(f"  Full text bbox: ({left}, {top}, {right}, {bottom})")
 
     min_y = top
     max_y = bottom
@@ -471,14 +468,10 @@ def _generate_horizontal_text(
     if is_thai:
         for g in graphemes:
             g_bbox = image_font.getbbox(g)
-            print(f"  '{g}' bbox: {g_bbox}")
             min_y = min(min_y, g_bbox[1])
             max_y = max(max_y, g_bbox[3])
 
     y_offset = -min_y
-
-    print(f"  min_y={min_y}, max_y={max_y}")
-    print(f"  y_offset={y_offset}")
 
     if word_split:
         words = text.split(" ")
@@ -505,8 +498,6 @@ def _generate_horizontal_text(
             grapheme_widths = [get_text_width(image_font, g) for g in graphemes]
             text_width = sum(grapheme_widths) + character_spacing * max(0, len(graphemes) - 1)
             text_height = max_y - min_y
-
-    print(f"  Canvas: {text_width}x{text_height}")
 
     txt_img = Image.new("RGBA", (text_width, text_height), (0, 0, 0, 0))
     txt_mask = Image.new("RGB", (text_width, text_height), (0, 0, 0))
