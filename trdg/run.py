@@ -12,7 +12,7 @@ from multiprocessing import Pool
 
 from tqdm import tqdm
 
-from trdg.data_generator import FakeTextDataGenerator
+from trdg.universal_data_generator_wrapper import UniversalDataGeneratorWrapper
 from trdg.string_generator import (
     create_strings_from_dict,
     create_strings_from_file,
@@ -451,7 +451,7 @@ def main():
     p = Pool(args.thread_count)
     for _ in tqdm(
             p.imap_unordered(
-                FakeTextDataGenerator.generate_from_tuple,
+                UniversalDataGeneratorWrapper.generate_from_tuple,
                 zip(
                     [i for i in range(0, string_count)],
                     strings,
