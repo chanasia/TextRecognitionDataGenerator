@@ -45,20 +45,6 @@ def create_coco_annotation(
         annotation_id: int,
         category_id: int = 1
 ) -> Tuple[Dict, List[Dict]]:
-    """
-    Create COCO format annotations from metadata.
-    Returns word-level + character component annotations.
-
-    Categories:
-    1: word
-    2: base character (consonant)
-    3: leading vowel (เ แ โ ใ ไ)
-    4: upper_vowel (ิ ี ึ ื ั)
-    5: upper_tone (่ ้ ๊ ๋)
-    6: upper_diacritic (์ ํ ็)
-    7: lower (ุ ู ฺ)
-    8: trailing (า from ำ)
-    """
     image_info = {
         "id": metadata["image_id"],
         "file_name": metadata["file_name"],
@@ -92,177 +78,40 @@ def create_coco_annotation(
         })
         current_ann_id += 1
 
-    # 2. Character component annotations
     if "char_positions" in metadata:
         for char_pos in metadata["char_positions"]:
 
-            # Base character
-            if char_pos. get("base_bbox"):
-                bbox = char_pos["base_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
+            # สร้าง list ของ keys ที่เราสนใจทั้งหมด
+            component_keys = [
+                "base_bbox", "leading_bbox", "upper_vowel_bbox",
+                "upper_tone_bbox", "upper_diacritic_bbox",
+                "lower_bbox", "trailing_bbox"
+            ]
 
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id": metadata["image_id"],
-                        "category_id": 2,
-                        "segmentation": [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
+            for key in component_keys:
+                if char_pos.get(key):
+                    bbox = char_pos[key]
+                    # สร้าง Polygon สี่เหลี่ยมจาก bbox (TextFuseNet ต้องการ segmentation)
+                    char_polygon = [
+                        bbox[0], bbox[1],
+                        bbox[2], bbox[1],
+                        bbox[2], bbox[3],
+                        bbox[0], bbox[3]
+                    ]
+                    width = bbox[2] - bbox[0]
+                    height = bbox[3] - bbox[1]
 
-            # Leading vowel
-            if char_pos.get("leading_bbox"):
-                bbox = char_pos["leading_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id": metadata["image_id"],
-                        "category_id": 3,
-                        "segmentation": [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
-
-            # Upper vowel
-            if char_pos. get("upper_vowel_bbox"):
-                bbox = char_pos["upper_vowel_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id": metadata["image_id"],
-                        "category_id": 4,
-                        "segmentation": [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
-
-            # Upper tone
-            if char_pos.get("upper_tone_bbox"):
-                bbox = char_pos["upper_tone_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id":  metadata["image_id"],
-                        "category_id": 5,
-                        "segmentation":  [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
-
-            # Upper diacritic
-            if char_pos.get("upper_diacritic_bbox"):
-                bbox = char_pos["upper_diacritic_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id":  metadata["image_id"],
-                        "category_id": 6,
-                        "segmentation":  [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
-
-            # Lower vowel
-            if char_pos.get("lower_bbox"):
-                bbox = char_pos["lower_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id": metadata["image_id"],
-                        "category_id": 7,
-                        "segmentation": [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
-
-            # Trailing
-            if char_pos.get("trailing_bbox"):
-                bbox = char_pos["trailing_bbox"]
-                char_polygon = [
-                    bbox[0], bbox[1],
-                    bbox[2], bbox[1],
-                    bbox[2], bbox[3],
-                    bbox[0], bbox[3]
-                ]
-                width = bbox[2] - bbox[0]
-                height = bbox[3] - bbox[1]
-
-                if width > 0 and height > 0:
-                    annotations.append({
-                        "id": current_ann_id,
-                        "image_id": metadata["image_id"],
-                        "category_id": 8,
-                        "segmentation": [char_polygon],
-                        "bbox": [bbox[0], bbox[1], width, height],
-                        "area": width * height,
-                        "iscrowd": 0
-                    })
-                    current_ann_id += 1
+                    if width > 0 and height > 0:
+                        annotations.append({
+                            "id": current_ann_id,
+                            "image_id": metadata["image_id"],
+                            "category_id": 2,
+                            "segmentation": [char_polygon],
+                            "bbox": [bbox[0], bbox[1], width, height],
+                            "area": width * height,
+                            "iscrowd": 0
+                        })
+                        current_ann_id += 1
 
     return image_info, annotations
 
@@ -276,14 +125,8 @@ def save_coco_json(
     """Save COCO format JSON file."""
     if categories is None:
         categories = [
-            {"id": 1, "name":  "word"},
-            {"id":  2, "name": "base"},
-            {"id": 3, "name": "leading"},
-            {"id": 4, "name": "upper_vowel"},
-            {"id": 5, "name": "upper_tone"},
-            {"id": 6, "name": "upper_diacritic"},
-            {"id": 7, "name": "lower"},
-            {"id": 8, "name": "trailing"}
+            {"id": 1, "name": "word"},
+            {"id": 2, "name": "character"}
         ]
 
     coco_format = {
