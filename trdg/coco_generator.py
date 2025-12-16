@@ -52,9 +52,12 @@ def create_coco_annotation(
     Categories:
     1: word
     2: base character (consonant)
-    3: upper vowel/tone
-    4: lower vowel
-    5: trailing (sara am)
+    3: leading vowel (เ แ โ ใ ไ)
+    4: upper_vowel (ิ ี ึ ื ั)
+    5: upper_tone (่ ้ ๊ ๋)
+    6: upper_diacritic (์ ํ ็)
+    7: lower (ุ ู ฺ)
+    8: trailing (า from ำ)
     """
     image_info = {
         "id": metadata["image_id"],
@@ -70,16 +73,16 @@ def create_coco_annotation(
     word_polygon = char_boxes_to_word_polygon(metadata["char_bboxes"])
 
     if word_polygon:
-        min_x = min(word_polygon[0::2])
-        min_y = min(word_polygon[1::2])
-        max_x = max(word_polygon[0::2])
-        max_y = max(word_polygon[1::2])
+        min_x = min(word_polygon[0:: 2])
+        min_y = min(word_polygon[1:: 2])
+        max_x = max(word_polygon[0:: 2])
+        max_y = max(word_polygon[1:: 2])
         bbox_width = max_x - min_x
         bbox_height = max_y - min_y
         area = bbox_width * bbox_height
 
         annotations.append({
-            "id": current_ann_id,
+            "id":  current_ann_id,
             "image_id": metadata["image_id"],
             "category_id": 1,
             "segmentation": [word_polygon],
@@ -94,7 +97,7 @@ def create_coco_annotation(
         for char_pos in metadata["char_positions"]:
 
             # Base character
-            if char_pos["base_bbox"]:
+            if char_pos. get("base_bbox"):
                 bbox = char_pos["base_bbox"]
                 char_polygon = [
                     bbox[0], bbox[1],
@@ -117,9 +120,9 @@ def create_coco_annotation(
                     })
                     current_ann_id += 1
 
-            # Upper vowel/tone
-            if char_pos["upper_bbox"]:
-                bbox = char_pos["upper_bbox"]
+            # Leading vowel
+            if char_pos.get("leading_bbox"):
+                bbox = char_pos["leading_bbox"]
                 char_polygon = [
                     bbox[0], bbox[1],
                     bbox[2], bbox[1],
@@ -141,9 +144,9 @@ def create_coco_annotation(
                     })
                     current_ann_id += 1
 
-            # Lower vowel
-            if char_pos["lower_bbox"]:
-                bbox = char_pos["lower_bbox"]
+            # Upper vowel
+            if char_pos. get("upper_vowel_bbox"):
+                bbox = char_pos["upper_vowel_bbox"]
                 char_polygon = [
                     bbox[0], bbox[1],
                     bbox[2], bbox[1],
@@ -165,8 +168,80 @@ def create_coco_annotation(
                     })
                     current_ann_id += 1
 
-            # Trailing (sara am)
-            if char_pos["trailing_bbox"]:
+            # Upper tone
+            if char_pos.get("upper_tone_bbox"):
+                bbox = char_pos["upper_tone_bbox"]
+                char_polygon = [
+                    bbox[0], bbox[1],
+                    bbox[2], bbox[1],
+                    bbox[2], bbox[3],
+                    bbox[0], bbox[3]
+                ]
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+
+                if width > 0 and height > 0:
+                    annotations.append({
+                        "id": current_ann_id,
+                        "image_id":  metadata["image_id"],
+                        "category_id": 5,
+                        "segmentation":  [char_polygon],
+                        "bbox": [bbox[0], bbox[1], width, height],
+                        "area": width * height,
+                        "iscrowd": 0
+                    })
+                    current_ann_id += 1
+
+            # Upper diacritic
+            if char_pos.get("upper_diacritic_bbox"):
+                bbox = char_pos["upper_diacritic_bbox"]
+                char_polygon = [
+                    bbox[0], bbox[1],
+                    bbox[2], bbox[1],
+                    bbox[2], bbox[3],
+                    bbox[0], bbox[3]
+                ]
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+
+                if width > 0 and height > 0:
+                    annotations.append({
+                        "id": current_ann_id,
+                        "image_id":  metadata["image_id"],
+                        "category_id": 6,
+                        "segmentation":  [char_polygon],
+                        "bbox": [bbox[0], bbox[1], width, height],
+                        "area": width * height,
+                        "iscrowd": 0
+                    })
+                    current_ann_id += 1
+
+            # Lower vowel
+            if char_pos.get("lower_bbox"):
+                bbox = char_pos["lower_bbox"]
+                char_polygon = [
+                    bbox[0], bbox[1],
+                    bbox[2], bbox[1],
+                    bbox[2], bbox[3],
+                    bbox[0], bbox[3]
+                ]
+                width = bbox[2] - bbox[0]
+                height = bbox[3] - bbox[1]
+
+                if width > 0 and height > 0:
+                    annotations.append({
+                        "id": current_ann_id,
+                        "image_id": metadata["image_id"],
+                        "category_id": 7,
+                        "segmentation": [char_polygon],
+                        "bbox": [bbox[0], bbox[1], width, height],
+                        "area": width * height,
+                        "iscrowd": 0
+                    })
+                    current_ann_id += 1
+
+            # Trailing
+            if char_pos.get("trailing_bbox"):
                 bbox = char_pos["trailing_bbox"]
                 char_polygon = [
                     bbox[0], bbox[1],
@@ -181,7 +256,7 @@ def create_coco_annotation(
                     annotations.append({
                         "id": current_ann_id,
                         "image_id": metadata["image_id"],
-                        "category_id": 5,
+                        "category_id": 8,
                         "segmentation": [char_polygon],
                         "bbox": [bbox[0], bbox[1], width, height],
                         "area": width * height,
@@ -201,11 +276,14 @@ def save_coco_json(
     """Save COCO format JSON file."""
     if categories is None:
         categories = [
-            {"id": 1, "name": "word"},
-            {"id": 2, "name": "base"},
-            {"id": 3, "name": "upper"},
-            {"id": 4, "name": "lower"},
-            {"id": 5, "name": "trailing"}
+            {"id": 1, "name":  "word"},
+            {"id":  2, "name": "base"},
+            {"id": 3, "name": "leading"},
+            {"id": 4, "name": "upper_vowel"},
+            {"id": 5, "name": "upper_tone"},
+            {"id": 6, "name": "upper_diacritic"},
+            {"id": 7, "name": "lower"},
+            {"id": 8, "name": "trailing"}
         ]
 
     coco_format = {
@@ -221,10 +299,10 @@ def save_coco_json(
         "categories": categories
     }
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path. dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", encoding="utf8") as f:
-        json.dump(coco_format, f, ensure_ascii=False, indent=2)
+        json. dump(coco_format, f, ensure_ascii=False, indent=2)
 
     print(f"Saved COCO annotations to {output_path}")
     print(f"  Images: {len(images)}")
@@ -241,7 +319,7 @@ def convert_metadata_to_coco(
 
     Args:
         metadata_dir: Directory containing *_metadata.json files
-        output_dir: Directory to save train.json and val.json
+        output_dir: Directory to save train. json and val.json
         train_ratio: Ratio of training data (default: 0.8)
     """
     import glob
@@ -259,11 +337,11 @@ def convert_metadata_to_coco(
 
     # Split train/val
     split_idx = int(len(metadata_files) * train_ratio)
-    train_files = metadata_files[:split_idx]
+    train_files = metadata_files[: split_idx]
     val_files = metadata_files[split_idx:]
 
     print(f"Total files: {len(metadata_files)}")
-    print(f"Train: {len(train_files)}, Val: {len(val_files)}")
+    print(f"Train:  {len(train_files)}, Val: {len(val_files)}")
 
     # Process train set
     train_images = []
@@ -292,7 +370,7 @@ def convert_metadata_to_coco(
     for meta_file in val_files:
         try:
             with open(meta_file, "r", encoding="utf8") as f:
-                metadata = json.load(f)
+                metadata = json. load(f)
         except (json.JSONDecodeError, Exception) as e:
             print(f"Skipping corrupted file: {meta_file} - {e}")
             continue
@@ -306,7 +384,7 @@ def convert_metadata_to_coco(
 
     # Save COCO JSONs
     save_coco_json(
-        os.path.join(output_dir, "annotations", "train.json"),
+        os.path. join(output_dir, "annotations", "train.json"),
         train_images,
         train_annotations
     )

@@ -1,240 +1,389 @@
+"""Text image generation with Thai language support."""
+
 import random as rnd
-import re
 from typing import Tuple, List, Dict
-from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
-import numpy as np
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from trdg.utils import get_text_width, get_text_height, get_text_bbox
-
-# Thai upper vowels and tone marks (above baseline)
-THAI_UPPER_CHARS = set('\u0E31\u0E34\u0E35\u0E36\u0E37\u0E47\u0E48\u0E49\u0E4A\u0E4B\u0E4C\u0E4D')
-
-# Thai lower vowels (below baseline)
-THAI_LOWER_CHARS = set('\u0E38\u0E39\u0E3A')
-
-# Sara Am (special case:  splits into upper + trailing)
-SARA_AM = '\u0E33'  # ำ
-NIKHAHIT = '\u0E4D'  # ◌ํ (upper part)
-SARA_AA = '\u0E32'  # า (trailing part)
+from trdg.thai_utils import (
+    decompose_thai_grapheme,
+    normalize_grapheme,
+    split_grapheme_clusters,
+    has_upper_vowel,
+    has_lower_vowel,
+    contains_thai
+)
+from trdg.thai_bbox import measure_grapheme_bboxes
 
 
-def _decompose_thai_grapheme(grapheme: str) -> Dict:
-    """
-    Decompose Thai grapheme into base + upper + lower components.
+def _render_simple_text(
+        txt_img_draw: ImageDraw.ImageDraw,
+        txt_mask_draw: ImageDraw.ImageDraw,
+        image_font: ImageFont.FreeTypeFont,
+        text: str,
+        fill: Tuple[int, int, int],
+        stroke_width: int,
+        stroke_fill_color: Tuple[int, int, int],
+        word_split: bool,
+        space_width: float,
+        character_spacing: int,
+        y_offset: int
+) -> List[Dict]:
+    """Render non-Thai text using simple character-based approach."""
+    if word_split:
+        words = text.split(" ")
+        splitted_text = []
+        for w in words:
+            splitted_text.append(w)
+            splitted_text.append(" ")
+        if splitted_text:
+            splitted_text.pop()
+    else:
+        splitted_text = list(text)
 
-    Special handling for สระอำ (U+0E33) → splits into nikhahit + sara aa
-
-    Returns:
-        {
-            'base': str,           # consonant or base character
-            'upper': str,          # upper vowels/tones (empty if none)
-            'lower': str,          # lower vowels (empty if none)
-            'trailing': str,       # trailing characters like า from ำ
-            'is_sara_am': bool     # True if contains sara am
-        }
-    """
-    if not grapheme:
-        return {'base': '', 'upper': '', 'lower': '', 'trailing': '', 'is_sara_am': False}
-
-    # Special case: Sara Am
-    if SARA_AM in grapheme:
-        base = grapheme.replace(SARA_AM, '')
-        return {
-            'base': base if base else '',
-            'upper': NIKHAHIT,
-            'lower': '',
-            'trailing': SARA_AA,
-            'is_sara_am': True
-        }
-
-    # Normal case: separate base from diacritics
-    base = ''
-    upper = ''
-    lower = ''
-
-    for char in grapheme:
-        if char in THAI_UPPER_CHARS:
-            upper += char
-        elif char in THAI_LOWER_CHARS:
-            lower += char
+    piece_widths = []
+    for p in splitted_text:
+        if p == " ":
+            piece_widths.append(int(get_text_width(image_font, " ") * space_width))
         else:
-            base += char
+            piece_widths.append(get_text_width(image_font, p))
 
-    return {
-        'base': base,
-        'upper': upper,
-        'lower': lower,
-        'trailing': '',
-        'is_sara_am': False
-    }
+    char_positions = []
+    for i, p in enumerate(splitted_text):
+        x_pos = sum(piece_widths[0:i]) + i * character_spacing * int(not word_split)
 
-
-def _measure_sara_am_components(
-        image_font: ImageFont,
-        sara_am_char: str,
-        x_offset: int,
-        y_offset: int
-) -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]:
-    """
-    Measure sara am (ำ) by splitting into upper (nikhahit) and trailing (sara aa) parts.
-    Uses gap detection to accurately separate components.
-    Returns:  (upper_bbox, trailing_bbox)
-    """
-    left, top, right, bottom = image_font.getbbox(sara_am_char)
-    width = right - left
-    height = bottom - top
-
-    # Render sara am with padding
-    padding = 10
-    img = Image.new('L', (width + padding * 2, height + padding * 2), 0)
-    draw = ImageDraw.Draw(img)
-    draw.text((padding - left, padding - top), sara_am_char, fill=255, font=image_font)
-    pixels = np.array(img)
-
-    # Find all text pixels
-    rows, cols = np.where(pixels > 0)
-
-    if len(rows) == 0:
-        print("    [ERROR] No pixels found in sara am!")
-        return None, None
-
-    min_row, max_row = rows.min(), rows.max()
-    min_col, max_col = cols.min(), cols.max()
-
-    # Detect gap:  sum pixels per row
-    row_sums = np.sum(pixels > 0, axis=1)
-
-    # Find rows with minimal pixels (gap between nikhahit and sara aa)
-    # Look for gap in middle 30%-70% region
-    search_start = min_row + int((max_row - min_row) * 0.2)
-    search_end = min_row + int((max_row - min_row) * 0.8)
-
-    gap_row = None
-    min_pixel_count = float('inf')
-
-    for row in range(search_start, search_end):
-        if row_sums[row] < min_pixel_count:
-            min_pixel_count = row_sums[row]
-            gap_row = row
-
-    print(f"    [DEBUG] Gap detected at row {gap_row}, pixel count: {min_pixel_count}")
-    print(f"    [DEBUG] Row range: {min_row} to {max_row}")
-
-    # Split at gap
-    # Upper part (nikhahit): rows <= gap_row
-    upper_rows = rows[rows <= gap_row]
-    upper_cols = cols[rows <= gap_row]
-
-    if len(upper_rows) > 0:
-        upper_bbox = (
-            x_offset + upper_cols.min() - padding + left,
-            y_offset + upper_rows.min() - padding + top,
-            x_offset + upper_cols.max() + 1 - padding + left,  # +1 for inclusive
-            y_offset + upper_rows.max() + 1 - padding + top
+        txt_img_draw.text(
+            (x_pos, y_offset),
+            p,
+            fill=fill,
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
         )
-    else:
-        upper_bbox = None
-
-    # Lower part (sara aa): rows > gap_row
-    lower_rows = rows[rows > gap_row]
-    lower_cols = cols[rows > gap_row]
-
-    if len(lower_rows) > 0:
-        trailing_bbox = (
-            x_offset + lower_cols.min() - padding + left,
-            y_offset + lower_rows.min() - padding + top,
-            x_offset + lower_cols.max() + 1 - padding + left,
-            y_offset + lower_rows.max() + 1 - padding + top
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            p,
+            fill=((i + 1) // (255 * 255), (i + 1) // 255, (i + 1) % 255),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
         )
-    else:
-        trailing_bbox = None
 
-    print(f"    [_measure_sara_am_components]")
-    print(f"      Upper bbox: {upper_bbox}")
-    print(f"      Trailing bbox: {trailing_bbox}")
+        # [แก้ไขจุดที่ 3] เช็คว่าไม่ใช่ช่องว่าง ก่อนเก็บ BBox
+        if p.strip():
+            left, top, right, bottom = get_text_bbox(image_font, p)
+            char_positions.append({
+                "grapheme": p,
+                "bbox": (x_pos, y_offset + top, x_pos + (right - left), y_offset + bottom)
+            })
 
-    return upper_bbox, trailing_bbox
+    return char_positions
 
 
-def _measure_component(
-        image_font: ImageFont,
-        base_char: str,
-        component_char: str,
-        x_offset: int,
+def _render_thai_mask_components(
+        txt_mask_draw: ImageDraw.ImageDraw,
+        image_font: ImageFont.FreeTypeFont,
+        components: Dict,
+        x_pos: int,
+        y_offset: int,
+        base_idx: int,
+        stroke_width: int,
+        stroke_fill_color: Tuple[int, int, int]
+) -> None:
+    """Render Thai grapheme components to mask image."""
+    def get_mask_color(idx: int) -> Tuple[int, int, int]:
+        return ((idx + 1) // (255 * 255), (idx + 1) // 255, (idx + 1) % 255)
+
+    mask_idx = base_idx
+
+    if components['base'] or components['leading']:
+        base_text = (components['leading'] if components['leading'] else '') + \
+                   (components['base'] if components['base'] else '')
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            base_text,
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        mask_idx += 1000
+
+    if components['upper_vowel']:
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            components['base'] + components['upper_vowel'],
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        mask_idx += 1000
+
+    if components['upper_diacritic']:
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            base_for_render + components['upper_diacritic'],
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        mask_idx += 1000
+
+    if components['upper_tone']:
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            base_for_render + components['upper_tone'],
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        mask_idx += 1000
+
+    if components['lower']:
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            base_for_render + components['lower'],
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        mask_idx += 1000
+
+    if components['trailing']:
+        txt_mask_draw.text(
+            (x_pos, y_offset),
+            (components['base'] if components['base'] else '') + components['trailing'],
+            fill=get_mask_color(mask_idx),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+
+
+def _render_thai_text(
+        txt_img_draw: ImageDraw.ImageDraw,
+        txt_mask_draw: ImageDraw.ImageDraw,
+        image_font: ImageFont.FreeTypeFont,
+        graphemes: List[str],
+        fill: Tuple[int, int, int],
+        stroke_width: int,
+        stroke_fill_color: Tuple[int, int, int],
+        word_split: bool,
+        text: str,
+        space_width: float,
+        character_spacing: int,
         y_offset: int
-) -> Tuple[int, int, int, int]:
-    """
-    Measure bbox of component by rendering and finding non-zero pixels.
-    """
-    if not component_char or not base_char:
-        return None
+) -> List[Dict]:
+    """Render Thai text with detailed component-level bboxes."""
+    if word_split:
+        words = text.split(" ")
+        text_parts = []
+        for i, word in enumerate(words):
+            text_parts.append(word)
+            if i < len(words) - 1:
+                text_parts.append(" ")
 
-    # Render composite to get actual pixels
-    composite = base_char + component_char
-    comp_left, comp_top, comp_right, comp_bottom = image_font.getbbox(composite)
+        char_positions, _ = _calculate_char_positions(
+            image_font, graphemes, y_offset, word_split=True,
+            text_parts=text_parts, space_width=space_width
+        )
 
-    # Create temporary image to render
-    width = comp_right - comp_left + 10
-    height = comp_bottom - comp_top + 10
+        char_index = 0
+        for pos in char_positions:
+            g_normalized = normalize_grapheme(pos["grapheme"])
 
-    # Render base alone
-    base_img = Image.new('L', (width, height), 0)
-    base_draw = ImageDraw.Draw(base_img)
-    base_draw.text((5 - comp_left, 5 - comp_top), base_char, fill=255, font=image_font)
-    base_pixels = np.array(base_img)
+            txt_img_draw.text(
+                (pos["x_offset"], y_offset),
+                g_normalized,
+                fill=fill,
+                font=image_font,
+                stroke_width=stroke_width,
+                stroke_fill=stroke_fill_color,
+            )
 
-    # Render composite
-    comp_img = Image.new('L', (width, height), 0)
-    comp_draw = ImageDraw.Draw(comp_img)
-    comp_draw.text((5 - comp_left, 5 - comp_top), composite, fill=255, font=image_font)
-    comp_pixels = np.array(comp_img)
+            char_index = _render_grapheme_to_mask(
+                txt_mask_draw, image_font, pos["components"],
+                pos["x_offset"], y_offset, char_index,
+                stroke_width, stroke_fill_color
+            )
+    else:
+        char_positions, _ = _calculate_char_positions(
+            image_font, graphemes, y_offset
+        )
 
-    # Find component pixels (difference)
-    component_pixels = np.logical_and(comp_pixels > 0, base_pixels == 0)
+        for i, pos in enumerate(char_positions):
+            g_normalized = normalize_grapheme(pos["grapheme"])
+            x_pos = pos["x_offset"] + (i * character_spacing if character_spacing > 0 else 0)
 
-    # Find bbox of component pixels
-    rows, cols = np.where(component_pixels)
+            txt_img_draw.text(
+                (x_pos, y_offset),
+                g_normalized,
+                fill=fill,
+                font=image_font,
+                stroke_width=stroke_width,
+                stroke_fill=stroke_fill_color,
+            )
 
-    if len(rows) == 0:
-        return None
+            _render_thai_mask_components(
+                txt_mask_draw, image_font, pos["components"],
+                x_pos, y_offset, i, stroke_width, stroke_fill_color
+            )
 
-    min_row, max_row = rows.min(), rows.max()
-    min_col, max_col = cols.min(), cols.max()
-
-    # Convert back to absolute coordinates
-    x1 = x_offset + min_col - 5 + comp_left
-    y1 = y_offset + min_row - 5 + comp_top
-    x2 = x_offset + max_col - 5 + comp_left
-    y2 = y_offset + max_row - 5 + comp_top
-
-    return (x1, y1, x2, y2)
-
-
-def _split_grapheme_clusters(text: str) -> List[str]:
-    th_pattern = r'[\u0E00-\u0E7F][\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]*'
-    clusters = []
-    pos = 0
-
-    for match in re.finditer(th_pattern, text):
-        if match.start() > pos:
-            clusters.extend(list(text[pos:match.start()]))
-        clusters.append(match.group())
-        pos = match.end()
-
-    if pos < len(text):
-        clusters.extend(list(text[pos:]))
-
-    return clusters
+    return char_positions
 
 
-def _has_upper_vowel(grapheme: str) -> bool:
-    """Check if grapheme contains Thai upper vowel or tone mark"""
-    return any(char in THAI_UPPER_CHARS for char in grapheme)
+def _calculate_char_positions(
+        image_font: ImageFont.FreeTypeFont,
+        graphemes: List[str],
+        y_offset: int,
+        word_split: bool = False,
+        text_parts: List[str] = None,
+        space_width: float = 1.0
+) -> Tuple[List[Dict], int]:
+    """Calculate character positions and bboxes for Thai graphemes."""
+    char_positions = []
+    x_offset = 0
+
+    if word_split and text_parts:
+        for part in text_parts:
+            part_graphemes = split_grapheme_clusters(part)
+
+            for g in part_graphemes:
+                g_width = get_text_width(image_font, g)
+
+                # [แก้ไขจุดที่ 1] เช็คว่าไม่ใช่ช่องว่าง ถึงจะคำนวณ BBox
+                if g.strip():
+                    components = decompose_thai_grapheme(g)
+                    bboxes = measure_grapheme_bboxes(image_font, g, components, x_offset, y_offset)
+
+                    char_positions.append({
+                        "grapheme": g,
+                        "x_offset": x_offset,
+                        "components": components,
+                        **bboxes,
+                        "is_sara_am": components['is_sara_am']
+                    })
+
+                x_offset += g_width
+
+            if part == " ":
+                space_w = get_text_width(image_font, " ")
+                x_offset = x_offset - space_w + int(space_w * space_width)
+    else:
+        for g in graphemes:
+            g_width = get_text_width(image_font, g)
+
+            if g.strip():
+                components = decompose_thai_grapheme(g)
+                bboxes = measure_grapheme_bboxes(image_font, g, components, x_offset, y_offset)
+
+                char_positions.append({
+                    "grapheme": g,
+                    "x_offset": x_offset,
+                    "components": components,
+                    **bboxes,
+                    "is_sara_am": components['is_sara_am']
+                })
+
+            x_offset += g_width
+
+    return char_positions, x_offset
 
 
-def _has_lower_vowel(grapheme: str) -> bool:
-    """Check if grapheme contains Thai lower vowel"""
-    return any(char in THAI_LOWER_CHARS for char in grapheme)
+def _render_grapheme_to_mask(
+        txt_mask_draw: ImageDraw.ImageDraw,
+        image_font: ImageFont.FreeTypeFont,
+        components: Dict,
+        x_offset: int,
+        y_offset: int,
+        char_index: int,
+        stroke_width: int,
+        stroke_fill_color: Tuple[int, int, int]
+) -> int:
+    """Render Thai grapheme components to mask for word_split mode. Returns updated char_index."""
+    def get_mask_color(idx):
+        return ((idx + 1) // (255 * 255), (idx + 1) // 255, (idx + 1) % 255)
+
+    if components['base'] or components['leading']:
+        base_text = (components['leading'] if components['leading'] else '') + \
+                   (components['base'] if components['base'] else '')
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            base_text,
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    if components['upper_vowel']:
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            components['base'] + components['upper_vowel'],
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    if components['upper_diacritic']:
+        upper_d = components['upper_diacritic']
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            base_for_render + upper_d,
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    if components['upper_tone']:
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            base_for_render + components['upper_tone'],
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    if components['lower']:
+        base_for_render = components['base'] if components['base'] else ''
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            base_for_render + components['lower'],
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    if components['trailing']:
+        txt_mask_draw.text(
+            (x_offset, y_offset),
+            (components['base'] if components['base'] else '') + components['trailing'],
+            fill=get_mask_color(char_index),
+            font=image_font,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill_color,
+        )
+        char_index += 1
+
+    return char_index
 
 
 def generate(
@@ -250,6 +399,11 @@ def generate(
         stroke_width: int = 0,
         stroke_fill: str = "#282828",
 ) -> Tuple:
+    """
+    Generate text image with optional Thai language support.
+
+    Returns (image, mask, char_positions) tuple.
+    """
     if orientation == 0:
         return _generate_horizontal_text(
             text,
@@ -291,12 +445,40 @@ def _generate_horizontal_text(
         stroke_width: int = 0,
         stroke_fill: str = "#282828",
 ) -> Tuple:
+    """
+    Generate horizontal text image.
+
+    Automatically detects Thai text and uses appropriate rendering method.
+    Returns (image, mask, char_positions) tuple.
+    """
     image_font = ImageFont.truetype(font=font, size=font_size, layout_engine=ImageFont.Layout.RAQM)
 
-    graphemes = _split_grapheme_clusters(text)
+    is_thai = contains_thai(text)
+
+    if is_thai:
+        graphemes = split_grapheme_clusters(text)
+    else:
+        graphemes = list(text)
+
+    print(f"\n[CANVAS DEBUG] Text: '{text}'")
 
     left, top, right, bottom = get_text_bbox(image_font, text)
-    y_offset = -top
+    print(f"  Full text bbox: ({left}, {top}, {right}, {bottom})")
+
+    min_y = top
+    max_y = bottom
+
+    if is_thai:
+        for g in graphemes:
+            g_bbox = image_font.getbbox(g)
+            print(f"  '{g}' bbox: {g_bbox}")
+            min_y = min(min_y, g_bbox[1])
+            max_y = max(max_y, g_bbox[3])
+
+    y_offset = -min_y
+
+    print(f"  min_y={min_y}, max_y={max_y}")
+    print(f"  y_offset={y_offset}")
 
     if word_split:
         words = text.split(" ")
@@ -314,15 +496,17 @@ def _generate_horizontal_text(
                 part_widths.append(get_text_width(image_font, part))
 
         text_width = sum(part_widths)
-        text_height = bottom - top
+        text_height = max_y - min_y
     else:
         if character_spacing == 0:
             text_width = right - left
-            text_height = bottom - top
+            text_height = max_y - min_y
         else:
             grapheme_widths = [get_text_width(image_font, g) for g in graphemes]
             text_width = sum(grapheme_widths) + character_spacing * max(0, len(graphemes) - 1)
-            text_height = bottom - top
+            text_height = max_y - min_y
+
+    print(f"  Canvas: {text_width}x{text_height}")
 
     txt_img = Image.new("RGBA", (text_width, text_height), (0, 0, 0, 0))
     txt_mask = Image.new("RGB", (text_width, text_height), (0, 0, 0))
@@ -348,279 +532,18 @@ def _generate_horizontal_text(
         rnd.randint(min(stroke_c1[2], stroke_c2[2]), max(stroke_c1[2], stroke_c2[2])),
     )
 
-    char_positions = []
-
-    if word_split:
-        x_offset = 0
-        char_index = 0
-        for part in text_parts:
-            part_graphemes = _split_grapheme_clusters(part)
-
-            for g in part_graphemes:
-                g_width = get_text_width(image_font, g)
-                components = _decompose_thai_grapheme(g)
-
-                # Base bbox
-                base_bbox = None
-                if components['base']:
-                    left, top, right, bottom = get_text_bbox(image_font, components['base'])
-                    base_bbox = (x_offset, y_offset + top, x_offset + g_width, y_offset + bottom)
-
-                # Upper vowel bbox and Trailing bbox (for sara am)
-                upper_bbox = None
-                trailing_bbox = None
-
-                if components['upper']:
-                    if components['is_sara_am']:
-                        # ใช้ฟังก์ชันพิเศษสำหรับสระอำ
-                        upper_bbox, trailing_bbox = _measure_sara_am_components(
-                            image_font, g, x_offset, y_offset
-                        )
-                    elif components['base']:
-                        upper_bbox = _measure_component(
-                            image_font, components['base'], components['upper'], x_offset, y_offset
-                        )
-                    else:
-                        # No base (standalone) - measure directly
-                        left, top, right, bottom = get_text_bbox(image_font, components['upper'])
-                        upper_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                # Lower vowel bbox
-                lower_bbox = None
-                if components['lower']:
-                    if components['base']:
-                        lower_bbox = _measure_component(
-                            image_font, components['base'], components['lower'], x_offset, y_offset
-                        )
-                    else:
-                        left, top, right, bottom = get_text_bbox(image_font, components['lower'])
-                        lower_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                # Trailing bbox (for non-sara am cases)
-                if components['trailing'] and not components['is_sara_am']:
-                    trailing_left, trailing_top, trailing_right, trailing_bottom = get_text_bbox(
-                        image_font, components['trailing']
-                    )
-                    base_width = get_text_width(image_font, components['base']) if components['base'] else 0
-                    trailing_bbox = (
-                        x_offset + base_width,
-                        y_offset + trailing_top,
-                        x_offset + base_width + (trailing_right - trailing_left),
-                        y_offset + trailing_bottom
-                    )
-
-                if components['is_sara_am']:
-                    print(f"\n=== Sara Am Debug:  '{g}' ===")
-                    print(f"  Base: '{components['base']}', bbox: {base_bbox}")
-                    print(f"  Upper (nikhahit): bbox: {upper_bbox}")
-                    print(f"  Trailing (aa): bbox: {trailing_bbox}")
-                    print(f"  x_offset: {x_offset}")
-
-                char_positions.append({
-                    "grapheme": g,
-                    "base_bbox": base_bbox,
-                    "upper_bbox": upper_bbox,
-                    "lower_bbox": lower_bbox,
-                    "trailing_bbox": trailing_bbox,
-                    "is_sara_am": components['is_sara_am']
-                })
-
-                txt_img_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=fill,
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                txt_mask_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=((char_index + 1) // (255 * 255), (char_index + 1) // 255, (char_index + 1) % 255),
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                x_offset += g_width
-                char_index += 1
-
-            if part == " ":
-                x_offset = x_offset - get_text_width(image_font, " ") + int(
-                    get_text_width(image_font, " ") * space_width)
+    if is_thai:
+        char_positions = _render_thai_text(
+            txt_img_draw, txt_mask_draw, image_font, graphemes,
+            fill, stroke_width, stroke_fill_color,
+            word_split, text, space_width, character_spacing, y_offset
+        )
     else:
-        if character_spacing == 0:
-            x_offset = 0
-            for i, g in enumerate(graphemes):
-                g_width = get_text_width(image_font, g)
-                components = _decompose_thai_grapheme(g)
-
-                base_bbox = None
-                if components['base']:
-                    left, top, right, bottom = get_text_bbox(image_font, components['base'])
-                    base_bbox = (x_offset, y_offset + top, x_offset + g_width, y_offset + bottom)
-
-                # Upper vowel bbox and Trailing bbox (for sara am)
-                upper_bbox = None
-                trailing_bbox = None
-
-                if components['upper']:
-                    if components['is_sara_am']:
-                        # ใช้ฟังก์ชันพิเศษสำหรับสระอำ
-                        upper_bbox, trailing_bbox = _measure_sara_am_components(
-                            image_font, g, x_offset, y_offset
-                        )
-                    elif components['base']:
-                        upper_bbox = _measure_component(
-                            image_font, components['base'], components['upper'], x_offset, y_offset
-                        )
-                    else:
-                        left, top, right, bottom = get_text_bbox(image_font, components['upper'])
-                        upper_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                lower_bbox = None
-                if components['lower']:
-                    if components['base']:
-                        lower_bbox = _measure_component(
-                            image_font, components['base'], components['lower'], x_offset, y_offset
-                        )
-                    else:
-                        left, top, right, bottom = get_text_bbox(image_font, components['lower'])
-                        lower_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                # Trailing bbox (for non-sara am cases)
-                if components['trailing'] and not components['is_sara_am']:
-                    trailing_left, trailing_top, trailing_right, trailing_bottom = get_text_bbox(
-                        image_font, components['trailing']
-                    )
-                    base_width = get_text_width(image_font, components['base']) if components['base'] else 0
-                    trailing_bbox = (
-                        x_offset + base_width,
-                        y_offset + trailing_top,
-                        x_offset + base_width + (trailing_right - trailing_left),
-                        y_offset + trailing_bottom
-                    )
-
-                if components['is_sara_am']:
-                    print(f"\n=== Sara Am Debug: '{g}' ===")
-                    print(f"  Base: '{components['base']}', bbox: {base_bbox}")
-                    print(f"  Upper (nikhahit): bbox: {upper_bbox}")
-                    print(f"  Trailing (aa): bbox: {trailing_bbox}")
-                    print(f"  x_offset: {x_offset}")
-
-                char_positions.append({
-                    "grapheme": g,
-                    "base_bbox": base_bbox,
-                    "upper_bbox": upper_bbox,
-                    "lower_bbox": lower_bbox,
-                    "trailing_bbox": trailing_bbox,
-                    "is_sara_am": components['is_sara_am']
-                })
-
-                txt_img_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=fill,
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                txt_mask_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=((i + 1) // (255 * 255), (i + 1) // 255, (i + 1) % 255),
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                x_offset += g_width
-        else:
-            x_offset = 0
-            for i, g in enumerate(graphemes):
-                g_width = get_text_width(image_font, g)
-                components = _decompose_thai_grapheme(g)
-
-                base_bbox = None
-                if components['base']:
-                    left, top, right, bottom = get_text_bbox(image_font, components['base'])
-                    base_bbox = (x_offset, y_offset + top, x_offset + g_width, y_offset + bottom)
-
-                # Upper vowel bbox and Trailing bbox (for sara am)
-                upper_bbox = None
-                trailing_bbox = None
-
-                if components['upper']:
-                    if components['is_sara_am']:
-                        # ใช้ฟังก์ชันพิเศษสำหรับสระอำ
-                        upper_bbox, trailing_bbox = _measure_sara_am_components(
-                            image_font, g, x_offset, y_offset
-                        )
-                    elif components['base']:
-                        upper_bbox = _measure_component(
-                            image_font, components['base'], components['upper'], x_offset, y_offset
-                        )
-                    else:
-                        left, top, right, bottom = get_text_bbox(image_font, components['upper'])
-                        upper_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                lower_bbox = None
-                if components['lower']:
-                    if components['base']:
-                        lower_bbox = _measure_component(
-                            image_font, components['base'], components['lower'], x_offset, y_offset
-                        )
-                    else:
-                        left, top, right, bottom = get_text_bbox(image_font, components['lower'])
-                        lower_bbox = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
-
-                # Trailing bbox (for non-sara am cases)
-                if components['trailing'] and not components['is_sara_am']:
-                    trailing_left, trailing_top, trailing_right, trailing_bottom = get_text_bbox(
-                        image_font, components['trailing']
-                    )
-                    base_width = get_text_width(image_font, components['base']) if components['base'] else 0
-                    trailing_bbox = (
-                        x_offset + base_width,
-                        y_offset + trailing_top,
-                        x_offset + base_width + (trailing_right - trailing_left),
-                        y_offset + trailing_bottom
-                    )
-
-                if components['is_sara_am']:
-                    print(f"\n=== Sara Am Debug: '{g}' ===")
-                    print(f"  Base: '{components['base']}', bbox: {base_bbox}")
-                    print(f"  Upper (nikhahit): bbox: {upper_bbox}")
-                    print(f"  Trailing (aa): bbox: {trailing_bbox}")
-                    print(f"  x_offset: {x_offset}")
-
-                char_positions.append({
-                    "grapheme": g,
-                    "base_bbox": base_bbox,
-                    "upper_bbox": upper_bbox,
-                    "lower_bbox": lower_bbox,
-                    "trailing_bbox": trailing_bbox,
-                    "is_sara_am": components['is_sara_am']
-                })
-
-                txt_img_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=fill,
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                txt_mask_draw.text(
-                    (x_offset, y_offset),
-                    g,
-                    fill=((i + 1) // (255 * 255), (i + 1) // 255, (i + 1) % 255),
-                    font=image_font,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_fill_color,
-                )
-                x_offset += g_width + character_spacing
-
-    print(f"Char positions created at original text size: {txt_img.size}")
-    print(f"Total char positions: {len(char_positions)}")
+        char_positions = _render_simple_text(
+            txt_img_draw, txt_mask_draw, image_font, text,
+            fill, stroke_width, stroke_fill_color,
+            word_split, space_width, character_spacing, y_offset
+        )
 
     if fit:
         return txt_img.crop(txt_img.getbbox()), txt_mask.crop(txt_img.getbbox()), char_positions
@@ -639,9 +562,14 @@ def _generate_vertical_text(
         stroke_width: int = 0,
         stroke_fill: str = "#282828",
 ) -> Tuple:
+    """
+    Generate vertical text image.
+
+    Returns (image, mask, char_positions) tuple.
+    """
     image_font = ImageFont.truetype(font=font, size=font_size, layout_engine=ImageFont.Layout.RAQM)
 
-    graphemes = _split_grapheme_clusters(text)
+    graphemes = split_grapheme_clusters(text)
 
     left, top, right, bottom = get_text_bbox(image_font, text)
     x_offset_base = -left
@@ -688,8 +616,8 @@ def _generate_vertical_text(
         char_positions.append({
             "grapheme": g,
             "bbox": (x_offset_base, y_pos + g_top, x_offset_base + (g_right - g_left), y_pos + g_bottom),
-            "is_upper_vowel": _has_upper_vowel(g),
-            "is_lower_vowel": _has_lower_vowel(g)
+            "is_upper_vowel": has_upper_vowel(g),
+            "is_lower_vowel": has_lower_vowel(g)
         })
 
         txt_img_draw.text(

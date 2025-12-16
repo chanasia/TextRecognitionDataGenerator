@@ -132,10 +132,6 @@ class FakeTextDataGenerator(object):
             resize_ratio = (float(size - vertical_margin) / float(distorted_img.size[1]))
             new_width = int(distorted_img.size[0] * resize_ratio)
 
-            print(f"\n=== DEBUG: Text '{text}' ===")
-            print(f"Original size: {distorted_img.size}")
-            print(f"Resize ratio: {resize_ratio:.4f}")
-            print(f"Resized to: ({new_width}, {size - vertical_margin})")
             resized_img = distorted_img.resize(
                 (new_width, size - vertical_margin), Image.Resampling.LANCZOS
             )
@@ -216,7 +212,6 @@ class FakeTextDataGenerator(object):
             background_img.paste(resized_img, (margin_left, margin_top), resized_img)
             background_mask.paste(resized_mask, (margin_left, margin_top))
             text_offset_x = margin_left
-            print(f"Text offset: ({text_offset_x}, {margin_top}) - Left aligned")
         elif alignment == 1:
             text_offset_x = int(background_width / 2 - new_text_width / 2)
             background_img.paste(
@@ -228,7 +223,6 @@ class FakeTextDataGenerator(object):
                 resized_mask,
                 (text_offset_x, margin_top),
             )
-            print(f"Text offset: ({text_offset_x}, {margin_top}) - Center aligned")
         else:
             text_offset_x = background_width - new_text_width - margin_right
             background_img.paste(
@@ -240,7 +234,6 @@ class FakeTextDataGenerator(object):
                 resized_mask,
                 (text_offset_x, margin_top),
             )
-            print(f"Text offset: ({text_offset_x}, {margin_top}) - Right aligned")
 
         ############################################
         # Change image mode (RGB, grayscale, etc.) #
@@ -299,11 +292,6 @@ class FakeTextDataGenerator(object):
                         )
 
             if output_coco:
-                char_bboxes = mask_to_bboxes(final_mask)
-
-                # Convert numpy int64 to Python int for JSON serialization
-                char_bboxes = [[int(v) for v in bbox] for bbox in char_bboxes]
-
                 # Transform char_positions to match final image
                 if orientation == 0:
                     resize_ratio = (float(size - vertical_margin) / float(distorted_img.size[1]))
@@ -322,25 +310,42 @@ class FakeTextDataGenerator(object):
                     ]
 
                 char_positions_json = []
-                for pos in char_positions:
-                    char_positions_json.append({
-                        "grapheme": pos["grapheme"],
-                        "base_bbox": transform_bbox(pos["base_bbox"], resize_ratio, text_offset_x, margin_top),
-                        "upper_bbox": transform_bbox(pos["upper_bbox"], resize_ratio, text_offset_x, margin_top),
-                        "lower_bbox": transform_bbox(pos["lower_bbox"], resize_ratio, text_offset_x, margin_top),
-                        "trailing_bbox": transform_bbox(pos["trailing_bbox"], resize_ratio, text_offset_x, margin_top),
-                        "is_sara_am": pos["is_sara_am"]
-                    })
+                char_bboxes = []
 
-                print(f"Transformed char positions: {len(char_positions_json)}")
-                if char_positions_json:
-                    print(f"First grapheme: {char_positions_json[0]['grapheme']}")
-                    if char_positions_json[0]['base_bbox']:
-                        print(f"  Base bbox: {char_positions_json[0]['base_bbox']}")
-                    if char_positions_json[0]['upper_bbox']:
-                        print(f"  Upper bbox: {char_positions_json[0]['upper_bbox']}")
-                    if char_positions_json[0]['trailing_bbox']:
-                        print(f"  Trailing bbox: {char_positions_json[0]['trailing_bbox']}")
+                for pos in char_positions:
+                    transformed_pos = {
+                        "grapheme": pos["grapheme"],
+                        "leading_bbox": transform_bbox(pos.get("leading_bbox"), resize_ratio, text_offset_x,
+                                                       margin_top),
+                        "base_bbox": transform_bbox(pos.get("base_bbox"), resize_ratio, text_offset_x, margin_top),
+                        "upper_vowel_bbox": transform_bbox(pos.get("upper_vowel_bbox"), resize_ratio, text_offset_x,
+                                                           margin_top),
+                        "upper_tone_bbox": transform_bbox(pos.get("upper_tone_bbox"), resize_ratio, text_offset_x,
+                                                          margin_top),
+                        "upper_diacritic_bbox": transform_bbox(pos.get("upper_diacritic_bbox"), resize_ratio,
+                                                               text_offset_x, margin_top),
+                        "lower_bbox": transform_bbox(pos.get("lower_bbox"), resize_ratio, text_offset_x, margin_top),
+                        "trailing_bbox": transform_bbox(pos.get("trailing_bbox"), resize_ratio, text_offset_x,
+                                                        margin_top),
+                        "is_sara_am": pos.get("is_sara_am", False)
+                    }
+                    char_positions_json.append(transformed_pos)
+
+                    # Extract all non-None bboxes as separate characters
+                    if transformed_pos["leading_bbox"]:
+                        char_bboxes.append(transformed_pos["leading_bbox"])
+                    if transformed_pos["base_bbox"]:
+                        char_bboxes.append(transformed_pos["base_bbox"])
+                    if transformed_pos["upper_vowel_bbox"]:
+                        char_bboxes.append(transformed_pos["upper_vowel_bbox"])
+                    if transformed_pos["upper_diacritic_bbox"]:
+                        char_bboxes.append(transformed_pos["upper_diacritic_bbox"])
+                    if transformed_pos["upper_tone_bbox"]:
+                        char_bboxes.append(transformed_pos["upper_tone_bbox"])
+                    if transformed_pos["lower_bbox"]:
+                        char_bboxes.append(transformed_pos["lower_bbox"])
+                    if transformed_pos["trailing_bbox"]:
+                        char_bboxes.append(transformed_pos["trailing_bbox"])
 
                 metadata = {
                     "image_id": index,
