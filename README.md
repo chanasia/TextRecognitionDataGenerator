@@ -41,8 +41,6 @@ dataset/
 
 ### Bounding Box Visualization
 
-![Visual Image](samples/visual1.png "Visual Image")
-
 ![Visual Image](samples/visual2.png "Visual Image")
 
 ### Dictionary
