@@ -15,8 +15,19 @@ from trdg.thai_utils import (
     has_lower_vowel,
     contains_thai
 )
-from trdg.thai_bbox import measure_grapheme_bboxes
+import uharfbuzz as hb
 
+from trdg.vector_engine import FontVectorEngineHB
+from trdg.thai_utils import contains_thai
+
+_vector_engines = {}
+
+def _get_vector_engine(font_path: str, size: int) -> FontVectorEngineHB:
+    """Get or create a cached vector engine."""
+    key = (font_path, size)
+    if key not in _vector_engines:
+        _vector_engines[key] = FontVectorEngineHB(font_path, size)
+    return _vector_engines[key]
 
 def _calculate_horizontal_bounds(
         image_font: ImageFont.FreeTypeFont,
@@ -29,76 +40,54 @@ def _calculate_horizontal_bounds(
 ) -> Tuple[float, float]:
     """
     Simulate text layout to find exact pixel bounds (min_x, max_x).
-    This fixes the clipping issue for italic/bold fonts with overhangs.
     """
     min_x = float('inf')
     max_x = float('-inf')
     cursor_x = 0.0
 
-    # Create an iterator that mimics the rendering loops exactly
     iterator = []
-
     if word_split and text_parts:
-        # Word split mode logic
         for part in text_parts:
             if part == " ":
-                iterator.append((" ", True)) # (text, is_space)
+                iterator.append((" ", True))
             else:
-                # For Thai, we split into graphemes; for others, chars
                 sub_graphemes = split_grapheme_clusters(part) if is_thai else list(part)
                 for g in sub_graphemes:
                     iterator.append((g, False))
     else:
-        # Standard character spacing mode
         for g in graphemes:
             iterator.append((g, False))
 
-    # Simulation Loop
     for i, (char, is_space) in enumerate(iterator):
         if is_space:
-            # Logic matches _render_simple_text and _calculate_char_positions
             space_w = get_text_width(image_font, " ")
             advance = int(space_w * space_width)
-
-            # Spaces don't have ink, but they advance the cursor
-            # We track cursor position for max_x to ensure trailing spaces aren't cut
             min_x = min(min_x, cursor_x)
             max_x = max(max_x, cursor_x + advance)
-
             cursor_x += advance
         else:
             advance = get_text_width(image_font, char)
-
-            # Get actual pixel bounds relative to the pen (0,0)
             if char.strip():
                 try:
                     left, _, right, _ = image_font.getbbox(char)
-                    # Convert to global coordinates
                     global_left = cursor_x + left
                     global_right = cursor_x + right
-
                     min_x = min(min_x, global_left)
                     max_x = max(max_x, global_right)
                 except Exception:
-                    # Fallback if getbbox fails
                     min_x = min(min_x, cursor_x)
                     max_x = max(max_x, cursor_x + advance)
             else:
-                # Invisible chars (like zero-width)
                 min_x = min(min_x, cursor_x)
                 max_x = max(max_x, cursor_x)
 
             cursor_x += advance
-
-            # Apply character spacing (if not the very last element)
             if not word_split and character_spacing > 0 and i < len(iterator) - 1:
                 cursor_x += character_spacing
 
     if min_x == float('inf'):
         return 0, 0
-
     return min_x, max_x
-
 
 def _render_simple_text(
         txt_img_draw: ImageDraw.ImageDraw,
@@ -112,7 +101,7 @@ def _render_simple_text(
         space_width: float,
         character_spacing: int,
         y_offset: int,
-        start_x: float = 0  # Added: Start position offset
+        start_x: float = 0
 ) -> List[Dict]:
     """Render non-Thai text using simple character-based approach."""
     if word_split:
@@ -134,16 +123,12 @@ def _render_simple_text(
             piece_widths.append(get_text_width(image_font, p))
 
     char_positions = []
-
-    # Calculate cumulative widths for positioning
-    current_x = start_x # Start with the calculated offset
+    current_x = start_x
 
     for i, p in enumerate(splitted_text):
-        # Determine spacing for this step
         spacing = character_spacing if not word_split and i > 0 else 0
         current_x += spacing
 
-        # Draw text at current_x
         txt_img_draw.text(
             (current_x, y_offset),
             p,
@@ -161,7 +146,6 @@ def _render_simple_text(
             stroke_fill=stroke_fill_color,
         )
 
-        # [แก้ไขจุดที่ 3] เช็คว่าไม่ใช่ช่องว่าง ก่อนเก็บ BBox
         if p.strip():
             left, top, right, bottom = get_text_bbox(image_font, p)
             char_positions.append({
@@ -169,7 +153,6 @@ def _render_simple_text(
                 "bbox": (current_x, y_offset + top, current_x + (right - left), y_offset + bottom)
             })
 
-        # Advance cursor for next character
         current_x += piece_widths[i]
 
     return char_positions
@@ -185,7 +168,7 @@ def _render_thai_mask_components(
         stroke_width: int,
         stroke_fill_color: Tuple[int, int, int]
 ) -> None:
-    """Render Thai grapheme components to mask image."""
+    """Render Thai grapheme components to mask image. (Legacy)"""
     def get_mask_color(idx: int) -> Tuple[int, int, int]:
         return ((idx + 1) // (255 * 255), (idx + 1) // 255, (idx + 1) % 255)
 
@@ -261,165 +244,6 @@ def _render_thai_mask_components(
             stroke_fill=stroke_fill_color,
         )
 
-
-def _render_thai_text(
-        txt_img_draw: ImageDraw.ImageDraw,
-        txt_mask_draw: ImageDraw.ImageDraw,
-        image_font: ImageFont.FreeTypeFont,
-        graphemes: List[str],
-        fill: Tuple[int, int, int],
-        stroke_width: int,
-        stroke_fill_color: Tuple[int, int, int],
-        word_split: bool,
-        text: str,
-        space_width: float,
-        character_spacing: int,
-        y_offset: int,
-        start_x: float = 0 # Added: Start position offset
-) -> List[Dict]:
-    """Render Thai text with detailed component-level bboxes."""
-    if word_split:
-        words = text.split(" ")
-        text_parts = []
-        for i, word in enumerate(words):
-            text_parts.append(word)
-            if i < len(words) - 1:
-                text_parts.append(" ")
-
-        # Pass start_x to calculation
-        char_positions, _ = _calculate_char_positions(
-            image_font, graphemes, y_offset, word_split=True,
-            text_parts=text_parts, space_width=space_width, start_x=start_x
-        )
-
-        char_index = 0
-        for pos in char_positions:
-            g_normalized = normalize_grapheme(pos["grapheme"])
-
-            txt_img_draw.text(
-                (pos["x_offset"], y_offset),
-                g_normalized,
-                fill=fill,
-                font=image_font,
-                stroke_width=stroke_width,
-                stroke_fill=stroke_fill_color,
-            )
-
-            char_index = _render_grapheme_to_mask(
-                txt_mask_draw, image_font, pos["components"],
-                pos["x_offset"], y_offset, char_index,
-                stroke_width, stroke_fill_color
-            )
-    else:
-        # Pass start_x to calculation
-        char_positions, _ = _calculate_char_positions(
-            image_font, graphemes, y_offset, start_x=start_x
-        )
-
-        for i, pos in enumerate(char_positions):
-            g_normalized = normalize_grapheme(pos["grapheme"])
-
-            # Recalculate x_pos including spacing (since _calculate_char_positions returns base width offsets)
-            # The logic here is tricky: _calculate_char_positions accumulates widths, but here we add spacing.
-            # We need to ensure we use the 'start_x' + cumulative width + cumulative spacing.
-
-            # However, _calculate_char_positions already returns 'x_offset' which is cumulative width + start_x.
-            # We just need to add the character spacing component.
-
-            x_pos = pos["x_offset"] + (i * character_spacing if character_spacing > 0 else 0)
-
-            # Update the stored offset in char_positions because we are shifting it by spacing
-            pos["x_offset"] = x_pos
-
-            # Also shift the detailed component bboxes
-            shift_amount = (i * character_spacing if character_spacing > 0 else 0)
-            if shift_amount > 0:
-                # Helper to shift bbox
-                def shift(b): return (b[0]+shift_amount, b[1], b[2]+shift_amount, b[3])
-                if pos['base_bbox']: pos['base_bbox'] = shift(pos['base_bbox'])
-                if pos['leading_bbox']: pos['leading_bbox'] = shift(pos['leading_bbox'])
-                if pos['upper_vowel_bbox']: pos['upper_vowel_bbox'] = shift(pos['upper_vowel_bbox'])
-                if pos['upper_tone_bbox']: pos['upper_tone_bbox'] = shift(pos['upper_tone_bbox'])
-                if pos['upper_diacritic_bbox']: pos['upper_diacritic_bbox'] = shift(pos['upper_diacritic_bbox'])
-                if pos['lower_bbox']: pos['lower_bbox'] = shift(pos['lower_bbox'])
-                if pos['trailing_bbox']: pos['trailing_bbox'] = shift(pos['trailing_bbox'])
-
-            txt_img_draw.text(
-                (x_pos, y_offset),
-                g_normalized,
-                fill=fill,
-                font=image_font,
-                stroke_width=stroke_width,
-                stroke_fill=stroke_fill_color,
-            )
-
-            _render_thai_mask_components(
-                txt_mask_draw, image_font, pos["components"],
-                x_pos, y_offset, i, stroke_width, stroke_fill_color
-            )
-
-    return char_positions
-
-
-def _calculate_char_positions(
-        image_font: ImageFont.FreeTypeFont,
-        graphemes: List[str],
-        y_offset: int,
-        word_split: bool = False,
-        text_parts: List[str] = None,
-        space_width: float = 1.0,
-        start_x: float = 0 # Added: Start position
-) -> Tuple[List[Dict], int]:
-    """Calculate character positions and bboxes for Thai graphemes."""
-    char_positions = []
-    x_offset = start_x # Initialize with start_x
-
-    if word_split and text_parts:
-        for part in text_parts:
-            part_graphemes = split_grapheme_clusters(part)
-
-            for g in part_graphemes:
-                g_width = get_text_width(image_font, g)
-
-                # [แก้ไขจุดที่ 1] เช็คว่าไม่ใช่ช่องว่าง ถึงจะคำนวณ BBox
-                if g.strip():
-                    components = decompose_thai_grapheme(g)
-                    bboxes = measure_grapheme_bboxes(image_font, g, components, x_offset, y_offset)
-
-                    char_positions.append({
-                        "grapheme": g,
-                        "x_offset": x_offset,
-                        "components": components,
-                        **bboxes,
-                        "is_sara_am": components['is_sara_am']
-                    })
-
-                x_offset += g_width
-
-            if part == " ":
-                space_w = get_text_width(image_font, " ")
-                x_offset = x_offset - space_w + int(space_w * space_width)
-    else:
-        for g in graphemes:
-            g_width = get_text_width(image_font, g)
-
-            if g.strip():
-                components = decompose_thai_grapheme(g)
-                bboxes = measure_grapheme_bboxes(image_font, g, components, x_offset, y_offset)
-
-                char_positions.append({
-                    "grapheme": g,
-                    "x_offset": x_offset,
-                    "components": components,
-                    **bboxes,
-                    "is_sara_am": components['is_sara_am']
-                })
-
-            x_offset += g_width
-
-    return char_positions, x_offset
-
-
 def _render_grapheme_to_mask(
         txt_mask_draw: ImageDraw.ImageDraw,
         image_font: ImageFont.FreeTypeFont,
@@ -430,7 +254,7 @@ def _render_grapheme_to_mask(
         stroke_width: int,
         stroke_fill_color: Tuple[int, int, int]
 ) -> int:
-    """Render Thai grapheme components to mask for word_split mode. Returns updated char_index."""
+    """Render Thai grapheme components to mask for word_split mode. Returns updated char_index. (Legacy)"""
     def get_mask_color(idx):
         return ((idx + 1) // (255 * 255), (idx + 1) // 255, (idx + 1) % 255)
 
@@ -527,6 +351,7 @@ def generate(
 
     Returns (image, mask, char_positions) tuple.
     """
+
     if orientation == 0:
         return _generate_horizontal_text(
             text,
@@ -555,7 +380,6 @@ def generate(
     else:
         raise ValueError("Unknown orientation " + str(orientation))
 
-
 def _generate_horizontal_text(
         text: str,
         font: str,
@@ -569,65 +393,87 @@ def _generate_horizontal_text(
         stroke_fill: str = "#282828",
 ) -> Tuple:
     """
-    Generate horizontal text image.
-
-    Automatically detects Thai text and uses appropriate rendering method.
-    Returns (image, mask, char_positions) tuple.
+    Generate horizontal text image using Vector Engine for exact layout.
     """
+
+    try:
+        engine = _get_vector_engine(font, font_size)
+    except Exception as e:
+        print(f"[Error] Could not load Vector Engine for {font}: {e}")
+        return None, None, []
+
     image_font = ImageFont.truetype(font=font, size=font_size, layout_engine=ImageFont.Layout.RAQM)
 
-    is_thai = contains_thai(text)
+    buf = hb.Buffer()
+    buf.add_str(text)
+    buf.guess_segment_properties()
+    hb.shape(engine.hb_font, buf)
 
-    if is_thai:
-        graphemes = split_grapheme_clusters(text)
-    else:
-        graphemes = list(text)
+    min_x, max_x = float('inf'), float('-inf')
+    min_y, max_y = float('inf'), float('-inf')
 
-    # 1. Prepare text parts for word split mode logic (if needed)
-    text_parts = []
-    if word_split:
-        words = text.split(" ")
-        for i, word in enumerate(words):
-            text_parts.append(word)
-            if i < len(words) - 1:
-                text_parts.append(" ")
+    cursor_x, cursor_y = 0, 0
+    glyph_layout_data = []
 
-    # 2. Calculate Exact Layout Bounds (Fix for clipping bugs)
-    # We simulate layout to find actual ink bounds (min_x, max_x)
-    min_x, max_x = _calculate_horizontal_bounds(
-        image_font, graphemes, word_split, text_parts, space_width, character_spacing, is_thai
-    )
+    for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
+        glyph_name = engine.ttfont.getGlyphName(info.codepoint)
 
-    # 3. Calculate Height Bounds
-    # Scan height of all characters to ensure we capture ascenders/descenders
-    left, top, right, bottom = get_text_bbox(image_font, text)
-    min_y = top
-    max_y = bottom
+        # HarfBuzz Units -> Pixels
+        x_offset = pos.x_offset / 64
+        y_offset = pos.y_offset / 64
+        x_advance = pos.x_advance / 64
+        y_advance = pos.y_advance / 64
 
-    if is_thai:
-        for g in graphemes:
-            if g.strip():
-                try:
-                    _, g_t, _, g_b = image_font.getbbox(g)
-                    min_y = min(min_y, g_t)
-                    max_y = max(max_y, g_b)
-                except Exception:
-                    pass
+        # Apply spacing adjustment (ถ้าไม่ใช่ตัวสุดท้าย)
+        if character_spacing > 0:
+            x_advance += character_spacing
 
-    # 4. Determine Canvas Dimensions
-    # Height
-    y_offset = -min_y
-    text_height = max_y - min_y
-    if text_height <= 0: text_height = font_size # fallback
+        # Base Position of this glyph
+        current_draw_x = cursor_x + x_offset
+        current_draw_y = cursor_y + y_offset
 
-    # Width: Use the calculated bounds
-    # max_x - min_x gives the tight width.
-    # If min_x is negative (left overhang), we need to shift drawing by -min_x
-    text_width = math.ceil(max_x - min_x)
-    start_x = -min_x
+        # Decompose to find True BBox
+        components = engine.decompose_glyph(glyph_name)
 
-    # Safety checks
+        has_ink = False
+        for comp in components:
+            bbox = comp.get('bbox')
+            if bbox:
+                has_ink = True
+                bx1, by1, bx2, by2 = bbox
+
+                # Global Coord Calculation (Font Coordinate System: Y-Up)
+                global_x1 = current_draw_x + bx1
+                global_x2 = current_draw_x + bx2
+                global_y1 = current_draw_y + by1
+                global_y2 = current_draw_y + by2
+
+                min_x = min(min_x, global_x1)
+                max_x = max(max_x, global_x2)
+                min_y = min(min_y, global_y1)
+                max_y = max(max_y, global_y2)
+
+        glyph_layout_data.append({
+            "glyph_name": glyph_name,
+            "components": components,
+            "draw_x": current_draw_x,
+            "draw_y": current_draw_y,
+            "x_advance": x_advance
+        })
+
+        cursor_x += x_advance
+        cursor_y += y_advance
+
+    # Safety Fallback
+    if min_x == float('inf'): min_x, max_x = 0, 0
+    if min_y == float('inf'): min_y, max_y = 0, font_size
+
+    #Tight Fit
+    text_height = int(math.ceil(max_y - min_y))
+    text_width = int(math.ceil(max_x - min_x))
+
     if text_width <= 0: text_width = 1
+    if text_height <= 0: text_height = 1
 
     txt_img = Image.new("RGBA", (text_width, text_height), (0, 0, 0, 0))
     txt_mask = Image.new("RGB", (text_width, text_height), (0, 0, 0))
@@ -635,9 +481,9 @@ def _generate_horizontal_text(
     txt_img_draw = ImageDraw.Draw(txt_img)
     txt_mask_draw = ImageDraw.Draw(txt_mask, mode="RGB")
 
+    # Colors
     colors = [ImageColor.getrgb(c) for c in text_color.split(",")]
     c1, c2 = colors[0], colors[-1]
-
     fill = (
         rnd.randint(min(c1[0], c2[0]), max(c1[0], c2[0])),
         rnd.randint(min(c1[1], c2[1]), max(c1[1], c2[1])),
@@ -646,33 +492,106 @@ def _generate_horizontal_text(
 
     stroke_colors = [ImageColor.getrgb(c) for c in stroke_fill.split(",")]
     stroke_c1, stroke_c2 = stroke_colors[0], stroke_colors[-1]
-
     stroke_fill_color = (
         rnd.randint(min(stroke_c1[0], stroke_c2[0]), max(stroke_c1[0], stroke_c2[0])),
         rnd.randint(min(stroke_c1[1], stroke_c2[1]), max(stroke_c1[1], stroke_c2[1])),
         rnd.randint(min(stroke_c1[2], stroke_c2[2]), max(stroke_c1[2], stroke_c2[2])),
     )
 
-    if is_thai:
-        char_positions = _render_thai_text(
-            txt_img_draw, txt_mask_draw, image_font, graphemes,
-            fill, stroke_width, stroke_fill_color,
-            word_split, text, space_width, character_spacing, y_offset,
-            start_x=start_x # Pass the calculated start offset
-        )
-    else:
-        char_positions = _render_simple_text(
-            txt_img_draw, txt_mask_draw, image_font, text,
-            fill, stroke_width, stroke_fill_color,
-            word_split, space_width, character_spacing, y_offset,
-            start_x=start_x # Pass the calculated start offset
-        )
+    start_offset_x = -min_x
+    font_top_y = max_y
+
+    txt_img_draw.text(
+        (start_offset_x, font_top_y),
+        text,
+        fill=fill,
+        font=image_font,
+        anchor="ls",  # Left-Baseline Alignment
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill_color,
+        language="th"  # Hint for PIL
+    )
+
+    char_positions = []
+    mask_idx = 0
+
+    for g_data in glyph_layout_data:
+        base_draw_x = g_data['draw_x'] + start_offset_x
+        base_draw_y = g_data['draw_y']
+
+        components = g_data['components']
+
+        # Data Structure
+        char_info = {
+            "glyph_name": g_data['glyph_name'],
+            "bbox": None,
+            "base_bbox": None,
+            "leading_bbox": None,
+            "upper_vowel_bbox": None,
+            "upper_tone_bbox": None,
+            "upper_diacritic_bbox": None,
+            "lower_bbox": None,
+            "trailing_bbox": None
+        }
+
+        all_comp_bboxes = []
+
+        # Color for this character/glyph in the mask
+        mask_color = ((mask_idx + 1) // (255 * 255), (mask_idx + 1) // 255, (mask_idx + 1) % 255)
+
+        for comp in components:
+            bbox = comp.get('bbox')
+            role = comp.get('role')
+
+            if bbox:
+                bx1, by1, bx2, by2 = bbox
+
+                # Convert to Image Coordinate System
+                img_x1 = base_draw_x + bx1
+                img_x2 = base_draw_x + bx2
+                img_y1 = font_top_y - (base_draw_y + by2)  # Y-Flip (Top)
+                img_y2 = font_top_y - (base_draw_y + by1)  # Y-Flip (Bottom)
+
+                final_bbox = (int(img_x1), int(img_y1), int(img_x2), int(img_y2))
+                all_comp_bboxes.append(final_bbox)
+
+                # Assign to Role
+                if role == "BASE":
+                    char_info["base_bbox"] = final_bbox
+                elif role == "LEADING_VOWEL":
+                    char_info["leading_bbox"] = final_bbox
+                elif role == "UPPER_VOWEL":
+                    char_info["upper_vowel_bbox"] = final_bbox
+                elif role == "TONE":
+                    char_info["upper_tone_bbox"] = final_bbox
+                elif role == "UPPER_DIACRITIC":
+                    char_info["upper_diacritic_bbox"] = final_bbox
+                elif role == "LOWER_VOWEL":
+                    char_info["lower_bbox"] = final_bbox
+                elif role == "TRAILING_VOWEL":
+                    char_info["trailing_bbox"] = final_bbox
+                elif role == "SARA_AA":
+                    char_info["trailing_bbox"] = final_bbox
+                elif role == "NIKHAHIT":
+                    char_info["upper_diacritic_bbox"] = final_bbox
+
+                txt_mask_draw.rectangle(final_bbox, fill=mask_color)
+
+        if all_comp_bboxes:
+            # Calculate total bbox for the glyph
+            min_bx = min(b[0] for b in all_comp_bboxes)
+            min_by = min(b[1] for b in all_comp_bboxes)
+            max_bx = max(b[2] for b in all_comp_bboxes)
+            max_by = max(b[3] for b in all_comp_bboxes)
+            char_info['bbox'] = (min_bx, min_by, max_bx, max_by)
+
+            char_positions.append(char_info)
+            mask_idx += 1
 
     if fit:
         return txt_img.crop(txt_img.getbbox()), txt_mask.crop(txt_img.getbbox()), char_positions
     else:
         return txt_img, txt_mask, char_positions
-
 
 def _generate_vertical_text(
         text: str,

@@ -68,12 +68,6 @@ class FakeTextDataGenerator(object):
             output_bboxes: int = 0,
             output_coco: bool = False,
     ) -> Image:
-        try:
-            font_name = os.path.basename(font)
-            print(f"Generating Image ID {index} | Text: {text} | Font: {font_name}")
-        except Exception:
-            pass
-
         image = None
 
         margin_top, margin_left, margin_bottom, margin_right = margins
