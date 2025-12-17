@@ -58,17 +58,19 @@ The generator outputs annotations using the following 8 category IDs. Note that 
 | **7** | `lower` | Lower vowels (สระล่าง) |  ุ,  ู,  ฺ |
 | **8** | `trailing` | **Sara Aa part of Sara Am** (สระอา ที่มาจาก สระอำ) | า (part of ำ) |
 
+### Example
 
-![Sample Image](samples/กรุงเทพมหานครเป็นเมืองหลวงของประเทศไทย_8.jpg "Sample Output")
-![Sample Image](samples/การนอนหลับพักผ่อนให้เพียงพอเป็นสิ่งสำคัญ_10.jpg "Sample Output")
-![Sample Image](samples/ช่วย Check บิลโต๊ะห้าให้หน่อยครับลูกค้าจะกลับแล้ว_18.jpg "Sample Output")
-
-### Bounding Box Visualization
 ![Sample Image](samples/กรุงเทพมหานครเป็นเมืองหลวงของประเทศไทย_8.jpg "Sample Output")
 
 ![Sample Image](samples/การนอนหลับพักผ่อนให้เพียงพอเป็นสิ่งสำคัญ_10.jpg "Sample Output")
 
 ![Sample Image](samples/ช่วย%20Check%20บิลโต๊ะห้าให้หน่อยครับลูกค้าจะกลับแล้ว_18.jpg "Sample Output")
+
+### Bounding Box Visualization
+
+![Visual Image](samples/visual1.png "Visual Image")
+
+![Visual Image](samples/visual2.png "Visual Image")
 
 ### Dictionary
 
