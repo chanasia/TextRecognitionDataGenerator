@@ -8,28 +8,16 @@ Generating Thai text image samples to train an OCR software. Now supporting thai
 
 ## What do I need to make it work?
 ```bash
-pip install lmdb pillow torchvision nltk natsort six fire
+pip install pillow nltk natsort six fire uharfbuzz fonttools opencv-python tqdm diffimg arabic-reshaper python-bidi wikipedia
 ```
 
 ### Basic (CLI)
 ```bash
-python run.py -dt dicts/th_en_words.txt -oc -ft "fonts/th/THSarabunNew.ttf" -b 1 -k 0 -rk -d 0 -do 0 -bl 0 -stw 0
+python run.py -dt dicts/th_en_words.txt -oc -ft "fonts/th/THSarabun.ttf" -b 1 -k 0 -rk -d 0 -do 0 -bl 0 -stw 0 -f 64 -e png
 ```
-
-### Command Line Arguments
-
-Here is an explanation of the flags used in the example command:
-
-| Argument | Description | Recommended for Clean Data |
-| :--- | :--- | :--- |
-| `-dt` | Path to the dictionary file (text source). | `dicts/th_en_words.txt` |
-| `-oc` | **Output COCO:** Enable COCO JSON export mode. | (Required) |
-| `-ft` | Path to the TTF font file. | `fonts/th/THSarabunNew.ttf` |
-| `-b` | Background type (0=Gaussian Noise, 1=Plain White, 2=Quasicrystal). | `1` (White) |
-| `-k`, `-rk` | Skew angle and Random Skew. Set to 0 to keep text straight. | `0` |
-| `-d`, `-do` | Distortion and Distortion Orientation. | `0` |
-| `-bl` | Blur radius. | `0` (No blur) |
-| `-stw` | Stroke width (thickness of outline). | `0` (No outline) |
+```bash
+python run.py -dt dicts/th_en_words.txt -oc -ft "fonts/th/THSarabun.ttf" -b 1 -k 0 -rk -d 0 -do 0 -bl 0 -stw 0 -d 3 -do 10 -f 64 -e png
+```
 
 ### COCO Output Format
 
