@@ -84,10 +84,10 @@ def _measure_pixels(
         return None
 
     # Calculate Raw BBox
-    x1 = x_offset + tone_cols.min() + comp_left
-    y1 = y_offset + tone_rows.min() + comp_top
-    x2 = x_offset + tone_cols.max() + 1 + comp_left
-    y2 = y_offset + tone_rows.max() + 1 + comp_top
+    x1 = int(x_offset + tone_cols.min() + comp_left)
+    y1 = int(y_offset + tone_rows.min() + comp_top)
+    x2 = int(x_offset + tone_cols.max() + 1 + comp_left)
+    y2 = int(y_offset + tone_rows.max() + 1 + comp_top)
 
     if is_tone:
         padding = max(1, int(font_size * 0.02))  # Dynamic Padding
@@ -122,10 +122,11 @@ def _measure_leading(
         if len(rows) == 0:
             return None
 
-        x1 = x_offset + cols.min() + full_left
-        y1 = y_offset + rows.min() + full_top
-        x2 = x_offset + cols.max() + 1 + full_left
-        y2 = y_offset + rows.max() + 1 + full_top
+        # [Fix] Ensure int
+        x1 = int(x_offset + cols.min() + full_left)
+        y1 = int(y_offset + rows.min() + full_top)
+        x2 = int(x_offset + cols.max() + 1 + full_left)
+        y2 = int(y_offset + rows.max() + 1 + full_top)
         return (x1, y1, x2, y2)
 
     no_lead_mask = image_font.getmask(grapheme_without_leading)
@@ -137,10 +138,11 @@ def _measure_leading(
     if len(rows) == 0:
         return None
 
-    x1 = x_offset + cols.min() + full_left
-    y1 = y_offset + rows.min() + full_top
-    x2 = x_offset + cols.max() + 1 + full_left
-    y2 = y_offset + rows.max() + 1 + full_top
+    # [Fix] Ensure int
+    x1 = int(x_offset + cols.min() + full_left)
+    y1 = int(y_offset + rows.min() + full_top)
+    x2 = int(x_offset + cols.max() + 1 + full_left)
+    y2 = int(y_offset + rows.max() + 1 + full_top)
     return (x1, y1, x2, y2)
 
 
@@ -158,7 +160,6 @@ def _measure_sara_am(
     if not full_char:
         return None, None
 
-    # 1. Render Full Image (น้ำ)
     try:
         full_left, full_top, full_right, full_bottom = image_font.getbbox(full_char)
         full_mask = image_font.getmask(full_char)
@@ -166,7 +167,6 @@ def _measure_sara_am(
     except:
         return None, None
 
-    # 2. Render Base Image (น) เพื่อลบออก
     sub_pixels = None
     sub_top, sub_left = full_top, full_left
 
@@ -201,23 +201,17 @@ def _measure_sara_am(
         if sub_h > 0 and sub_w > 0:
             sub_padded[y_start:y_end, x_start:x_end] = sub_pixels[:sub_h, :sub_w]
 
-    # 4. Subtraction: ลบ Base ออก -> เหลือ Tone + Nikhahit + Sara Aa
     am_pixels = (full_padded.astype(int) - sub_padded.astype(int)) > 0
 
-    # 5. Masking: ลบ Tone/Vowel ออก (ตาม BBox ที่ส่งมา)
-    # เราจะระบายสีดำทับลงไปใน am_pixels เลย
     if cut_out_bboxes:
         for bbox in cut_out_bboxes:
             if bbox:
                 bx1, by1, bx2, by2 = bbox
 
-                # แปลง Global Coords (bx, by) เป็น Local Coords ของ Full Image
-                # Global X = x_offset + full_left + local_c
-                # local_c = Global X - x_offset - full_left
-                c1 = bx1 - x_offset - full_left
-                r1 = by1 - y_offset - full_top
-                c2 = bx2 - x_offset - full_left
-                r2 = by2 - y_offset - full_top
+                c1 = int(bx1 - x_offset - full_left)
+                r1 = int(by1 - y_offset - full_top)
+                c2 = int(bx2 - x_offset - full_left)
+                r2 = int(by2 - y_offset - full_top)
 
                 # Clip ให้อยู่ในขอบเขตภาพ
                 c1, r1 = max(0, c1), max(0, r1)
@@ -247,8 +241,6 @@ def _measure_sara_am(
                 break
 
     if gap_row == -1:
-        # Fallback logic (ถ้ามันชิดกันมากจนไม่มี gap หรือมีแค่ส่วนเดียว)
-        # พยายามตัดครึ่งทางแนวตั้งถ้ามันสูงเกินไป
         gap_row = (min_row + max_row) // 2
 
     upper_mask = (rows <= gap_row)
@@ -257,23 +249,22 @@ def _measure_sara_am(
     upper_rows, upper_cols = rows[upper_mask], cols[upper_mask]
     lower_rows, lower_cols = rows[lower_mask], cols[lower_mask]
 
-    # 7. สร้าง Result BBox
     upper_bbox = None
     if len(upper_rows) > 0:
         upper_bbox = (
-            x_offset + upper_cols.min() + full_left,
-            y_offset + upper_rows.min() + full_top,
-            x_offset + upper_cols.max() + 1 + full_left,
-            y_offset + upper_rows.max() + 1 + full_top
+            int(x_offset + upper_cols.min() + full_left),
+            int(y_offset + upper_rows.min() + full_top),
+            int(x_offset + upper_cols.max() + 1 + full_left),
+            int(y_offset + upper_rows.max() + 1 + full_top)
         )
 
     trailing_bbox = None
     if len(lower_rows) > 0:
         trailing_bbox = (
-            x_offset + lower_cols.min() + full_left,
-            y_offset + lower_rows.min() + full_top,
-            x_offset + lower_cols.max() + 1 + full_left,
-            y_offset + lower_rows.max() + 1 + full_top
+            int(x_offset + lower_cols.min() + full_left),
+            int(y_offset + lower_rows.min() + full_top),
+            int(x_offset + lower_cols.max() + 1 + full_left),
+            int(y_offset + lower_rows.max() + 1 + full_top)
         )
 
     return upper_bbox, trailing_bbox
@@ -306,13 +297,16 @@ def measure_grapheme_bboxes(
     if components['base']:
         base_width = get_text_width(image_font, components['base'])
         left, top, right, bottom = get_text_bbox(image_font, components['base'])
-        result["base_bbox"] = (x_offset, y_offset + top, x_offset + base_width, y_offset + bottom)
+        # [Fix] Ensure int
+        result["base_bbox"] = (
+            int(x_offset),
+            int(y_offset + top),
+            int(x_offset + base_width),
+            int(y_offset + bottom)
+        )
 
-        # --- [จุดที่ต้องแก้: แทนที่ Block นี้ทั้งหมด] ---
     if components['is_sara_am']:
-        # 1. วัดวรรณยุกต์/สระบน ตามปกติ (Logic เดิม)
         if components['upper_tone']:
-            # เคล็ดลับ: ส่ง base_with_nikhahit (Base+วงกลม) ไปวัด เพื่อให้ได้ตำแหน่ง Tone ที่สูงถูกต้อง
             base_with_nikhahit = (components['base'] or '') + NIKHAHIT
             result["upper_tone_bbox"] = _measure_pixels(
                 image_font, base_with_nikhahit, components['upper_tone'],
@@ -327,8 +321,7 @@ def measure_grapheme_bboxes(
                 x_offset, y_offset
             )
 
-        # 2. แยกสระอำ (นิคหิต + สระอา)
-        # วิธีใหม่: ส่งแค่ Base ไปลบ และส่ง BBox ของ Tone ไป Mask ทิ้ง
+        #ส่งแค่ Base ไปลบ และส่ง BBox ของ Tone ไป Mask ทิ้ง
         nikhahit_bbox, sara_aa_bbox = _measure_sara_am(
             image_font, g_normalized, x_offset, y_offset,
             base_char_to_subtract=components['base'],
@@ -356,7 +349,7 @@ def measure_grapheme_bboxes(
                     is_tone = comp in THAI_TONE_MARKS
                     bbox = _measure_pixels(image_font, accumulated_base, comp, x_offset, 0, is_tone)
                     if bbox:
-                        bbox = (bbox[0], bbox[1] + y_offset, bbox[2], bbox[3] + y_offset)
+                        bbox = (bbox[0], int(bbox[1] + y_offset), bbox[2], int(bbox[3] + y_offset))
 
                     if i == 0:
                         result["upper_vowel_bbox"] = bbox
@@ -376,7 +369,7 @@ def measure_grapheme_bboxes(
                     )
                 else:
                     left, top, right, bottom = get_text_bbox(image_font, components['upper_vowel'])
-                    result["upper_vowel_bbox"] = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
+                    result["upper_vowel_bbox"] = (int(x_offset), int(y_offset + top), int(x_offset + (right - left)), int(y_offset + bottom))
 
             if has_tone:
                 if components['base']:
@@ -386,7 +379,7 @@ def measure_grapheme_bboxes(
                     )
                 else:
                     left, top, right, bottom = get_text_bbox(image_font, components['upper_tone'])
-                    result["upper_tone_bbox"] = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
+                    result["upper_tone_bbox"] = (int(x_offset), int(y_offset + top), int(x_offset + (right - left)), int(y_offset + bottom))
 
             if has_diacritic:
                 if components['base']:
@@ -396,7 +389,7 @@ def measure_grapheme_bboxes(
                     )
                 else:
                     left, top, right, bottom = get_text_bbox(image_font, components['upper_diacritic'])
-                    result["upper_diacritic_bbox"] = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
+                    result["upper_diacritic_bbox"] = (int(x_offset), int(y_offset + top), int(x_offset + (right - left)), int(y_offset + bottom))
 
     if components['lower']:
         if components['base']:
@@ -406,7 +399,7 @@ def measure_grapheme_bboxes(
             )
         else:
             left, top, right, bottom = get_text_bbox(image_font, components['lower'])
-            result["lower_bbox"] = (x_offset, y_offset + top, x_offset + (right - left), y_offset + bottom)
+            result["lower_bbox"] = (int(x_offset), int(y_offset + top), int(x_offset + (right - left)), int(y_offset + bottom))
 
     if components['trailing'] and not components['is_sara_am']:
         trailing_left, trailing_top, trailing_right, trailing_bottom = get_text_bbox(
@@ -414,10 +407,10 @@ def measure_grapheme_bboxes(
         )
         base_width = get_text_width(image_font, components['base']) if components['base'] else 0
         result["trailing_bbox"] = (
-            x_offset + base_width,
-            y_offset + trailing_top,
-            x_offset + base_width + (trailing_right - trailing_left),
-            y_offset + trailing_bottom
+            int(x_offset + base_width),
+            int(y_offset + trailing_top),
+            int(x_offset + base_width + (trailing_right - trailing_left)),
+            int(y_offset + trailing_bottom)
         )
 
     return result
