@@ -24,11 +24,18 @@ python run.py -dt dicts/th_en_words.txt -oc -ft "fonts/th/THSarabun.ttf" -b 1 -k
 When using the `-oc` flag, the generator creates an `dataset/` folder with the following structure:
 
 ```text
-dataset/
-├── annotations/
-│   ├── train.json
-│   └── val.json
-└── [images generated]
+dataset/thai_text/
+├── base/                       # Storage for all generated raw data
+│   ├── 0000/                   # First bucket (Images 0-4,999)
+│   │   ├── 0.jpg               # Generated image
+│   │   ├── 0_metadata.json     # Individual character-level metadata
+│   │   └── ...
+│   ├── 0001/                   # Second bucket (Images 5,000-9,999)
+│   └── ...                     # Additional buckets every 5,000 images
+└── coco-output/                # Final aggregated COCO dataset
+    └── annotations/            # Combined annotation files
+        ├── train.json          # COCO format for training set
+        └── val.json            # COCO format for validation set
 ```
 
 ### Example
